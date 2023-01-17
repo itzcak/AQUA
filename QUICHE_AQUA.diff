@@ -1,0 +1,909 @@
+diff --git a/quic/core/congestion_control/bbr2_sender.cc b/quic/core/congestion_control/bbr2_sender.cc
+index 3f1c4496..07444f52 100644
+--- a/quic/core/congestion_control/bbr2_sender.cc
++++ b/quic/core/congestion_control/bbr2_sender.cc
+@@ -92,6 +92,7 @@ Bbr2Sender::Bbr2Sender(QuicTime now,
+                 << ", PacingRate:" << pacing_rate_ << ", Cwnd:" << cwnd_
+                 << ", CwndLimits:" << cwnd_limits() << "  @ " << now;
+   QUICHE_DCHECK_EQ(mode_, Bbr2Mode::STARTUP);
++  std::cout << "Starting congestion control: BBR V2" << '\n';
+ }
+ 
+ void Bbr2Sender::SetFromConfig(const QuicConfig& config,
+diff --git a/quic/core/congestion_control/bbr_sender.cc b/quic/core/congestion_control/bbr_sender.cc
+index ba7a3571..384e1901 100644
+--- a/quic/core/congestion_control/bbr_sender.cc
++++ b/quic/core/congestion_control/bbr_sender.cc
+@@ -133,6 +133,7 @@ BbrSender::BbrSender(QuicTime now,
+   }
+   EnterStartupMode(now);
+   set_high_cwnd_gain(kDerivedHighCWNDGain);
++  std::cout << "Starting congestion control: BBR V1" << '\n';
+ }
+ 
+ BbrSender::~BbrSender() {}
+diff --git a/quic/core/congestion_control/tcp_cubic_sender_bytes.cc b/quic/core/congestion_control/tcp_cubic_sender_bytes.cc
+index 562da98c..1944a24c 100644
+--- a/quic/core/congestion_control/tcp_cubic_sender_bytes.cc
++++ b/quic/core/congestion_control/tcp_cubic_sender_bytes.cc
+@@ -52,7 +52,9 @@ TcpCubicSenderBytes::TcpCubicSenderBytes(
+                                      kDefaultTCPMSS),
+       initial_max_tcp_congestion_window_(max_congestion_window *
+                                          kDefaultTCPMSS),
+-      min_slow_start_exit_window_(min_congestion_window_) {}
++      min_slow_start_exit_window_(min_congestion_window_) {
++	  std::cout << "Starting congestion control: " << (reno? "Reno": "Cubic") << '\n';
++      }
+ 
+ TcpCubicSenderBytes::~TcpCubicSenderBytes() {}
+ 
+diff --git a/quic/core/quic_flags_list.h b/quic/core/quic_flags_list.h
+index 5105d905..97bcf791 100644
+--- a/quic/core/quic_flags_list.h
++++ b/quic/core/quic_flags_list.h
+@@ -38,7 +38,7 @@ QUIC_FLAG(FLAGS_quic_reloadable_flag_quic_accept_empty_crypto_frame, false)
+ // If true, ack frequency frame can be sent from server to client.
+ QUIC_FLAG(FLAGS_quic_reloadable_flag_quic_can_send_ack_frequency, true)
+ // If true, allow client to enable BBRv2 on server via connection option \'B2ON\'.
+-QUIC_FLAG(FLAGS_quic_reloadable_flag_quic_allow_client_enabled_bbr_v2, false)
++QUIC_FLAG(FLAGS_quic_reloadable_flag_quic_allow_client_enabled_bbr_v2, true)
+ // If true, always starts a new ack aggregation epoch if a full round has passed since the start of the current epoch.
+ QUIC_FLAG(FLAGS_quic_reloadable_flag_quic_bbr_start_new_aggregation_epoch_after_a_full_round, true)
+ // If true, change QuicCryptoServerStream::FinishProcessingHandshakeMessageAfterProcessClientHello to noop if connection is disconnected.
+diff --git a/quic/core/quic_session.cc b/quic/core/quic_session.cc
+index 4664a441..2f398af8 100644
+--- a/quic/core/quic_session.cc
++++ b/quic/core/quic_session.cc
+@@ -59,6 +59,8 @@ class ClosedStreamsCleanUpDelegate : public QuicAlarm::Delegate {
+ #define ENDPOINT \
+   (perspective() == Perspective::IS_SERVER ? "Server: " : "Client: ")
+ 
++#define TIME_SLOT_MS 100
++
+ QuicSession::QuicSession(
+     QuicConnection* connection, Visitor* owner, const QuicConfig& config,
+     const ParsedQuicVersionVector& supported_versions,
+@@ -107,7 +109,16 @@ QuicSession::QuicSession(
+       supported_versions_(supported_versions),
+       is_configured_(false),
+       was_zero_rtt_rejected_(false),
+-      liveness_testing_in_progress_(false) {
++      liveness_testing_in_progress_(false),
++      stream_send_part_(0.0),
++      available_bw_state_(BANDWITH_NOT_INITIALIZED),
++      bw_streams_to_run_(0),
++      start_round_time_(QuicTime::Zero()),
++      start_round_bytes_(0),
++      measured_bw_(0),
++      use_default_prioritization_(false),
++      bw_id_(0),
++      bw_max_id_(0) {
+   closed_streams_clean_up_alarm_ =
+       absl::WrapUnique<QuicAlarm>(connection_->alarm_factory()->CreateAlarm(
+           new ClosedStreamsCleanUpDelegate(this)));
+@@ -564,6 +575,9 @@ bool QuicSession::CheckStreamNotBusyLooping(QuicStream* stream,
+       !stream->write_side_closed() &&
+       // Not connection flow control blocked.
+       !flow_controller_.IsBlocked() &&
++      // Not finished priority limit
++      !((connection_->clock()->ApproximateNow() - start_round_time_).ToMilliseconds() <  TIME_SLOT_MS &&
++	  (stream->GetSendBytes() == 0 || stream->GetMaxBytesRemain() == 0)) &&
+       // Detect lack of forward progress.
+       previous_bytes_written == stream->stream_bytes_written() &&
+       previous_fin_sent == stream->fin_sent()) {
+@@ -602,6 +616,7 @@ bool QuicSession::CheckStreamWriteBlocked(QuicStream* stream) const {
+ }
+ 
+ void QuicSession::OnCanWrite() {
++  bool bw_min_config = true;
+   if (connection_->framer().is_processing_packet()) {
+     // Do not write data in the middle of packet processing because rest
+     // frames in the packet may change the data to write. For example, lost
+@@ -681,6 +696,20 @@ void QuicSession::OnCanWrite() {
+     if (!CanWriteStreamData()) {
+       return;
+     }
++    if (start_round_time_ == QuicTime::Zero() || (connection_->clock()->ApproximateNow() - start_round_time_).ToMilliseconds()  >= TIME_SLOT_MS) {
++	if (start_round_time_ != QuicTime::Zero())
++	    DoMeasureBW();
++	SetBwMaxId(GetBwMaxId() + 1);
++	if (UseDefaultPriority())
++	    SetBwId(GetBwId() + 1);
++	start_round_time_ = connection_->clock()->ApproximateNow();
++	start_round_bytes_ = GetSendBytesSeq();
++    }
++    if (bw_streams_to_run_ <= 0 && !UseDefaultPriority() && bw_min_config == true) {
++	bw_min_config = DivideStreamBw(connection()->sent_packet_manager().BandwidthEstimate());
++
++    }
++
+     currently_writing_stream_id_ = write_blocked_streams_.PopFront();
+     last_writing_stream_ids.push_back(currently_writing_stream_id_);
+     QUIC_DVLOG(1) << ENDPOINT << "Removing stream "
+@@ -694,7 +723,13 @@ void QuicSession::OnCanWrite() {
+       QUIC_DVLOG(1) << ENDPOINT << "stream " << stream->id()
+                     << " bytes_written " << previous_bytes_written << " fin "
+                     << previous_fin_sent;
++      if (stream->is_static() == false)
++	  SetPerStreamBw(*stream);
+       stream->OnCanWrite();
++      if (!write_blocked_streams_.IsStreamBlocked(stream->id()))
++	  stream->SetSendBytes(0); //Remove from priority schedule
++      if (stream->is_static() == false && stream->GetSendBytes() == 0)
++	  bw_streams_to_run_--;
+       QUICHE_DCHECK(CheckStreamWriteBlocked(stream));
+       QUICHE_DCHECK(CheckStreamNotBusyLooping(stream, previous_bytes_written,
+                                               previous_fin_sent));
+@@ -2082,17 +2117,26 @@ size_t QuicSession::GetNumActiveStreams() const {
+          num_zombie_streams_;
+ }
+ 
++#define WRITE_BLOCK_THRESHOLD 16000
+ void QuicSession::MarkConnectionLevelWriteBlocked(QuicStreamId id) {
+-  if (GetOrCreateStream(id) == nullptr) {
++  bool priority_enabled = false, be_front = false;
++  QuicStream *stream = GetOrCreateStream(id);
++  if (stream == nullptr) {
+     QUIC_BUG(quic_bug_10866_11)
+         << "Marking unknown stream " << id << " blocked.";
+     QUIC_LOG_FIRST_N(ERROR, 2) << QuicStackTrace();
++  } else {
++      // 1. Our priority: push front if there is remained quota. 2. Default priority: push front if remain and sent < 16K. 2. Otherwise: check only 16K(original).
++      priority_enabled = stream->GetBwMax() > 0 && ! UseDefaultPriority();
++      be_front = stream->GetSendBytes() > 0 && stream->GetMaxBytesRemain() > 0;
++      if (stream->GetBwMax() == 0)
++	  be_front = true;
+   }
+ 
+   QUIC_DVLOG(1) << ENDPOINT << "Adding stream " << id
+                 << " to write-blocked list";
+ 
+-  write_blocked_streams_.AddStream(id);
++  write_blocked_streams_.AddStream(id, priority_enabled, be_front);
+ }
+ 
+ bool QuicSession::HasDataToWrite() const {
+@@ -2103,6 +2147,10 @@ bool QuicSession::HasDataToWrite() const {
+          control_frame_manager_.WillingToWrite();
+ }
+ 
++bool QuicSession::HasBlockedStreams() const {
++  return write_blocked_streams_.HasWriteBlockedDataStreams();
++}
++
+ void QuicSession::OnAckNeedsRetransmittableFrame() {
+   flow_controller_.SendWindowUpdate();
+ }
+@@ -2675,5 +2723,117 @@ bool QuicSession::ValidateToken(absl::string_view token) {
+   return valid;
+ }
+ 
++QuicByteCount QuicSession::BandwidthToBytes(int64_t bw) {
++    return bw * TIME_SLOT_MS / 1000 / 8;
++}
++
++#define ONE_MBPS 1000000
++bool QuicSession::DivideStreamBw(QuicBandwidth cur_bw) {
++    int64_t bw_min=0, bw_max=0, bw_div=0, bw_score=0, *bw_min_addr = &bw_min, *bw_max_addr = &bw_max;
++    int64_t bw_prioritized=0, *bw_prioritized_addr = &bw_prioritized;
++    int64_t cur_bits = cur_bw.ToBitsPerSecond();
++    if (measured_bw_ > 0)
++	cur_bits = measured_bw_;
++    if (cur_bits < ONE_MBPS)
++	cur_bits = ONE_MBPS;
++    //measured_bw_ = 0;
++
++    bw_streams_to_run_ = 0;
++    PerformActionOnActiveStreams([this, bw_min_addr, bw_max_addr, bw_prioritized_addr](QuicStream* stream) mutable {
++      *bw_min_addr += stream->GetBwMin();
++      *bw_max_addr += stream->GetBwMax();
++      if (stream->IsPrioritized())
++        *bw_prioritized_addr += stream->GetBwMin();
++      bw_streams_to_run_++;
++      stream->SetSendBytes(0);
++      return true;
++    });
++
++    //std::cout << "DivideStreamBw: bw_min " << bw_min << " bw_max " << bw_max << '\n';
++    if (bw_min > cur_bits) {
++      available_bw_state_ = BANDWITH_BELOW_MIN;
++      bw_div = cur_bits - bw_prioritized;
++      bw_score = bw_min;
++    } else if (bw_max > cur_bits) {
++      available_bw_state_ = BANDWITH_MIN_TO_MAX;
++      bw_div = cur_bits - bw_min;
++      bw_score = (bw_min + bw_max) / 2;
++    } else if (bw_max > 0) {
++      available_bw_state_ = BANDWITH_OVER_MAX;
++      bw_div = cur_bits - bw_max;
++      bw_score = (bw_min + bw_max) / 2;
++    } else {
++      available_bw_state_ = BANDWITH_NOT_INITIALIZED;
++      return false;
++    }
++
++    if (bw_score > 0 && bw_div > 0) {
++      stream_send_part_ = (double)bw_div / bw_score;
++    } else {
++      stream_send_part_ = 0.0;
++    }
++
++//    std::cout << "DivideStreamBw: cur_bits " << cur_bits << ", bw_min " << bw_min << ", bw_max " << bw_max << ", bw_score " << bw_score << '\n';
++    SetBwId(GetBwId() + 1);
++    return true;
++}
++
++void QuicSession::SetPerStreamBw(QuicStream & stream) {
++    int64_t bw_min = stream.GetBwMin();
++    int64_t bw_max = stream.GetBwMax();
++    QuicByteCount bytes_to_send;
++    //static int count = 0;
++
++    if (stream.GetBwMaxId() != GetBwMaxId()) {
++	stream.SetMaxBytesRemain(BandwidthToBytes(bw_max));
++	stream.SetBwMaxId(GetBwMaxId());
++    }
++    if (stream.GetBwId() == GetBwId())
++	return;
++    if (UseDefaultPriority())
++	 bytes_to_send = (QuicByteCount)std::numeric_limits<int64_t>::max;
++    else switch (available_bw_state_) {
++      case BANDWITH_BELOW_MIN:
++	if (stream.IsPrioritized())
++	    bytes_to_send = (QuicByteCount)BandwidthToBytes(bw_min);
++	else
++	    bytes_to_send = (QuicByteCount)(stream_send_part_ * BandwidthToBytes(bw_min));
++	break;
++      case BANDWITH_MIN_TO_MAX:
++	bytes_to_send = (QuicByteCount)(((stream_send_part_ *  BandwidthToBytes(bw_min + bw_max)) / 2) + BandwidthToBytes(bw_min));
++	break;
++      case BANDWITH_OVER_MAX:
++	bytes_to_send = (QuicByteCount)(/*((stream_send_part_ *  BandwidthToBytes(bw_min + bw_max)) / 2) + */BandwidthToBytes(bw_max));
++	break;
++      default:
++	bytes_to_send = 0;
++	break;
++    }
++    //std::cout << "SetStreamBw: " << count << ": Time: " << connection_->clock()->ApproximateNow() << ", Stream: " << stream.id() << ", bytes_to_send "
++        //<< bytes_to_send << ", bw_min: " << bw_min << ", bw_max: " << bw_max << ", bw_streams_to_run_" << bw_streams_to_run_ << '\n';
++    //if (bw_streams_to_run_ <= 1)
++    //    count++;
++    stream.SetSendBytes(bytes_to_send);
++    stream.SetBwId(GetBwId());
++}
++
++QuicByteCount QuicSession::GetSendBytesSeq() {
++    QuicByteCount send_count = 0, *send_count_addr = &send_count;
++    PerformActionOnActiveStreams([send_count_addr](QuicStream* stream) mutable {
++      *send_count_addr += stream->stream_num_bytes_acked();
++      return true;
++    });
++    return send_count;
++}
++
++void QuicSession::DoMeasureBW() {
++    int64_t delta, cur_bw;
++    QuicByteCount bytes;
++    delta = (connection_->clock()->ApproximateNow() - start_round_time_).ToMicroseconds();
++    bytes = GetSendBytesSeq() - start_round_bytes_;
++    cur_bw = bytes * 8 * 1000000 / delta;
++    measured_bw_ = measured_bw_ > 0? ((measured_bw_ * 3) / 4) + (cur_bw / 4) : cur_bw;
++    //std::cout << "BW measure: " << cur_bw << ". Smoothed BW: " << measured_bw_ << ". Bytes: " << bytes << ". Delta: " << delta << '\n';
++}
+ #undef ENDPOINT  // undef for jumbo builds
+ }  // namespace quic
+diff --git a/quic/core/quic_session.h b/quic/core/quic_session.h
+index cb06d87b..0f7e293d 100644
+--- a/quic/core/quic_session.h
++++ b/quic/core/quic_session.h
+@@ -45,6 +45,7 @@
+ #include "quic/platform/api/quic_mem_slice.h"
+ #include "quic/platform/api/quic_socket_address.h"
+ #include "common/quiche_linked_hash_map.h"
++#include "quic/core/quic_bandwidth.h"
+ 
+ namespace quic {
+ 
+@@ -57,6 +58,14 @@ namespace test {
+ class QuicSessionPeer;
+ }  // namespace test
+ 
++enum QUIC_BANDWITH_STATE {
++    BANDWITH_NOT_INITIALIZED,
++    BANDWITH_BELOW_MIN,
++    BANDWITH_MIN_TO_MAX,
++    BANDWITH_OVER_MAX,
++    BANDWITH_FIELD_OVERFLOW,
++};
++
+ class QUIC_EXPORT_PRIVATE QuicSession
+     : public QuicConnectionVisitorInterface,
+       public SessionNotifierInterface,
+@@ -394,6 +403,8 @@ class QUIC_EXPORT_PRIVATE QuicSession
+   // connection, or in a write-blocked stream.
+   bool HasDataToWrite() const;
+ 
++  // Return true if there are streams waiting for write
++  bool HasBlockedStreams() const;
+   // Initiates a path validation on the path described in the given context,
+   // asynchronously calls |result_delegate| upon success or failure.
+   // The initiator should extend QuicPathValidationContext to provide the writer
+@@ -630,6 +641,10 @@ class QUIC_EXPORT_PRIVATE QuicSession
+   // Try converting all pending streams to normal streams.
+   void ProcessAllPendingStreams();
+ 
++  uint32_t GetBwId() {return bw_id_;}
++  void SetBwId(uint32_t id) {bw_id_ = id;}
++  uint32_t GetBwMaxId() {return bw_max_id_;}
++  void SetBwMaxId(uint32_t id) {bw_max_id_ = id;}
+  protected:
+   using StreamMap =
+       absl::flat_hash_map<QuicStreamId, std::unique_ptr<QuicStream>>;
+@@ -808,6 +823,8 @@ class QUIC_EXPORT_PRIVATE QuicSession
+     return absl::nullopt;
+   }
+ 
++  void SetUseDefaultPriority(bool priority) {use_default_prioritization_ = priority;}
++  bool UseDefaultPriority() {return use_default_prioritization_;}
+  private:
+   friend class test::QuicSessionPeer;
+ 
+@@ -1005,6 +1022,39 @@ class QUIC_EXPORT_PRIVATE QuicSession
+ 
+   const bool support_client_cert_ =
+       GetQuicRestartFlag(quic_tls_server_support_client_cert);
++
++  // Convertor
++  QuicByteCount BandwidthToBytes(int64_t bw);
++
++  // Divide connection BW between streams
++  bool DivideStreamBw(QuicBandwidth cur_bw);
++
++  // Calc single stream BW from global division
++  void SetPerStreamBw(QuicStream & stream);
++
++  // Get number of bytes sent all streams
++  QuicByteCount GetSendBytesSeq();
++
++  void DoMeasureBW();
++
++  // Per stream send amount permition base
++  double  stream_send_part_;
++
++  // Available BW state
++  QUIC_BANDWITH_STATE available_bw_state_;
++
++  // Number of streams to process in BW devision round
++  int32_t bw_streams_to_run_;
++
++  // Start round time and total number of bytes
++  QuicTime start_round_time_;
++  QuicByteCount start_round_bytes_;
++
++  // Measured BW
++  int64_t measured_bw_;
++  bool use_default_prioritization_;
++  uint32_t bw_id_;
++  uint32_t bw_max_id_;
+ };
+ 
+ }  // namespace quic
+diff --git a/quic/core/quic_stream.cc b/quic/core/quic_stream.cc
+index f055bdf2..ce875e88 100644
+--- a/quic/core/quic_stream.cc
++++ b/quic/core/quic_stream.cc
+@@ -375,7 +375,11 @@ QuicStream::QuicStream(QuicStreamId id, QuicSession* session,
+                                            session->version())
+                 : type),
+       creation_time_(session->connection()->clock()->ApproximateNow()),
+-      perspective_(session->perspective()) {
++      perspective_(session->perspective()),
++      bw_min_(0),
++      bw_max_(0),
++      prioritized_(false),
++      bw_id_(0) {
+   if (type_ == WRITE_UNIDIRECTIONAL) {
+     fin_received_ = true;
+     CloseReadSide();
+@@ -1217,6 +1221,7 @@ bool QuicStream::WriteStreamData(QuicStreamOffset offset,
+ 
+ void QuicStream::WriteBufferedData(EncryptionLevel level) {
+   QUICHE_DCHECK(!write_side_closed_ && (HasBufferedData() || fin_buffered_));
++  bool priority_blocked = false;
+ 
+   if (session_->ShouldYield(id())) {
+     session_->MarkConnectionLevelWriteBlocked(id());
+@@ -1262,6 +1267,16 @@ void QuicStream::WriteBufferedData(EncryptionLevel level) {
+                   << write_length << " due to flow control";
+   }
+ 
++  if (session_->HasBlockedStreams() && GetBwMax() > 0 && is_static() == false &&
++	  (write_length > send_bytes_allow_ || write_length > max_bytes_remain_)) {
++    write_length = std::min(send_bytes_allow_, max_bytes_remain_);
++    priority_blocked = true;
++    if (write_length == 0) {
++      session_->MarkConnectionLevelWriteBlocked(id());
++      return;
++    }
++  }
++
+   StreamSendingState state = fin ? FIN : NO_FIN;
+   if (fin && add_random_padding_after_fin_) {
+     state = FIN_AND_PADDING;
+@@ -1272,6 +1287,10 @@ void QuicStream::WriteBufferedData(EncryptionLevel level) {
+ 
+   OnStreamDataConsumed(consumed_data.bytes_consumed);
+ 
++  if (GetBwMax() > 0 && is_static() == false) {
++    send_bytes_allow_ -= std::min(consumed_data.bytes_consumed, send_bytes_allow_);
++    max_bytes_remain_ -= std::min(consumed_data.bytes_consumed, max_bytes_remain_);
++  }
+   AddBytesSent(consumed_data.bytes_consumed);
+   QUIC_DVLOG(1) << ENDPOINT << "stream " << id_ << " sends "
+                 << stream_bytes_written() << " bytes "
+@@ -1285,7 +1304,7 @@ void QuicStream::WriteBufferedData(EncryptionLevel level) {
+     return;
+   }
+ 
+-  if (consumed_data.bytes_consumed == write_length) {
++  if (consumed_data.bytes_consumed == write_length && priority_blocked == false) {
+     if (!fin_with_zero_data) {
+       MaybeSendBlocked();
+     }
+@@ -1328,6 +1347,10 @@ uint64_t QuicStream::stream_bytes_written() const {
+   return send_buffer_.stream_bytes_written();
+ }
+ 
++uint64_t QuicStream::stream_num_bytes_acked () const {
++    return stream_bytes_written() - send_buffer_.stream_bytes_outstanding();
++}
++
+ const QuicIntervalSet<QuicStreamOffset>& QuicStream::bytes_acked() const {
+   return send_buffer_.bytes_acked();
+ }
+diff --git a/quic/core/quic_stream.h b/quic/core/quic_stream.h
+index dc129a28..f5f46a6b 100644
+--- a/quic/core/quic_stream.h
++++ b/quic/core/quic_stream.h
+@@ -257,6 +257,7 @@ class QUIC_EXPORT_PRIVATE QuicStream
+ 
+   uint64_t stream_bytes_read() const { return stream_bytes_read_; }
+   uint64_t stream_bytes_written() const;
++  uint64_t stream_num_bytes_acked () const;
+ 
+   size_t busy_counter() const { return busy_counter_; }
+   void set_busy_counter(size_t busy_counter) { busy_counter_ = busy_counter; }
+@@ -403,6 +404,30 @@ class QUIC_EXPORT_PRIVATE QuicStream
+   // indicating it can start processing data.
+   void OnStreamCreatedFromPendingStream();
+ 
++  int64_t GetBwMin() { return bw_min_; }
++
++  void SetBwMin(int64_t bw) { bw_min_ = bw; }
++
++  int64_t GetBwMax() { return bw_max_; }
++
++  void SetBwMax(int64_t bw) { bw_max_ = bw; }
++
++  QuicByteCount GetSendBytes() { return send_bytes_allow_; }
++
++  void SetSendBytes(QuicByteCount bytes) { send_bytes_allow_ = bytes; }
++
++  QuicByteCount GetMaxBytesRemain() { return max_bytes_remain_; }
++
++  void SetMaxBytesRemain(QuicByteCount bytes) { max_bytes_remain_ = bytes; }
++
++  void SetPrioritized(bool prioritized) { prioritized_ = prioritized; }
++
++  bool IsPrioritized() { return prioritized_; }
++
++  uint32_t GetBwId() {return bw_id_;}
++  void SetBwId(uint32_t id) {bw_id_ = id;}
++  uint32_t GetBwMaxId() {return bw_max_id_;}
++  void SetBwMaxId(uint32_t id) {bw_max_id_ = id;}
+  protected:
+   // Called when data of [offset, offset + data_length] is buffered in send
+   // buffer.
+@@ -616,6 +641,18 @@ class QUIC_EXPORT_PRIVATE QuicStream
+   const QuicTime creation_time_;
+ 
+   Perspective perspective_;
++
++  int64_t bw_min_;
++
++  int64_t bw_max_;
++
++  QuicByteCount send_bytes_allow_ = 0;
++  QuicByteCount max_bytes_remain_ = 0;
++
++  bool prioritized_;
++
++  uint32_t bw_id_;
++  uint32_t bw_max_id_;
+ };
+ 
+ }  // namespace quic
+diff --git a/quic/core/quic_write_blocked_list.cc b/quic/core/quic_write_blocked_list.cc
+index 084241db..e5db2e98 100644
+--- a/quic/core/quic_write_blocked_list.cc
++++ b/quic/core/quic_write_blocked_list.cc
+@@ -104,13 +104,13 @@ void QuicWriteBlockedList::UpdateBytesForStream(QuicStreamId stream_id,
+   }
+ }
+ 
+-void QuicWriteBlockedList::AddStream(QuicStreamId stream_id) {
++void QuicWriteBlockedList::AddStream(QuicStreamId stream_id, bool priority, bool front) {
+   if (static_stream_collection_.SetBlocked(stream_id)) {
+     return;
+   }
+ 
+-  bool push_front =
+-      stream_id == batch_write_stream_id_[last_priority_popped_] &&
++  bool push_front = priority ? front :
++      front && stream_id == batch_write_stream_id_[last_priority_popped_] &&
+       bytes_left_for_batch_write_[last_priority_popped_] > 0;
+   priority_write_scheduler_.MarkStreamReady(stream_id, push_front);
+ }
+diff --git a/quic/core/quic_write_blocked_list.h b/quic/core/quic_write_blocked_list.h
+index 54441e77..814ad412 100644
+--- a/quic/core/quic_write_blocked_list.h
++++ b/quic/core/quic_write_blocked_list.h
+@@ -72,7 +72,7 @@ class QUIC_EXPORT_PRIVATE QuicWriteBlockedList {
+   // is latched for doing batched writes in which case it goes to the front of
+   // the list for its priority level.
+   // Headers and crypto streams are special cased to always resume first.
+-  void AddStream(QuicStreamId stream_id);
++  void AddStream(QuicStreamId stream_id, bool priority, bool front);
+ 
+   // Returns true if stream with |stream_id| is write blocked.
+   bool IsStreamBlocked(QuicStreamId stream_id) const;
+diff --git a/quic/tools/quic_simple_client_session.cc b/quic/tools/quic_simple_client_session.cc
+index 2e709195..4c7776d6 100644
+--- a/quic/tools/quic_simple_client_session.cc
++++ b/quic/tools/quic_simple_client_session.cc
+@@ -51,4 +51,20 @@ HttpDatagramSupport QuicSimpleClientSession::LocalHttpDatagramSupport() {
+                                : HttpDatagramSupport::kNone;
+ }
+ 
++bool compareStreamIdBytes(struct StreamIdBytes i1, struct StreamIdBytes i2)
++{
++    return (i1.id > i2.id);
++}
++
++void QuicSimpleClientSession::GetStreamsBytes(std::vector<struct StreamIdBytes>* count) {
++  PerformActionOnActiveStreams([count](QuicStream* stream) mutable {
++	  struct StreamIdBytes id_bytes;
++	  id_bytes.id = stream->id();
++	  id_bytes.len = stream->stream_bytes_read();
++	  count->push_back(id_bytes);
++	  return true;
++  });
++  std::sort(count->begin(), count->end(), compareStreamIdBytes);
++}
++
+ }  // namespace quic
+diff --git a/quic/tools/quic_simple_client_session.h b/quic/tools/quic_simple_client_session.h
+index 63714480..0cbae0ad 100644
+--- a/quic/tools/quic_simple_client_session.h
++++ b/quic/tools/quic_simple_client_session.h
+@@ -8,6 +8,11 @@
+ #include "quic/core/http/quic_spdy_client_session.h"
+ #include "quic/tools/quic_simple_client_stream.h"
+ 
++struct StreamIdBytes {
++    quic::QuicStreamId id;
++    uint64_t len;
++};
++
+ namespace quic {
+ 
+ class QuicSimpleClientSession : public QuicSpdyClientSession {
+@@ -32,6 +37,7 @@ class QuicSimpleClientSession : public QuicSpdyClientSession {
+   bool ShouldNegotiateWebTransport() override;
+   bool ShouldNegotiateDatagramContexts() override;
+   HttpDatagramSupport LocalHttpDatagramSupport() override;
++  void GetStreamsBytes(std::vector<struct StreamIdBytes>* count);
+ 
+  private:
+   const bool drop_response_body_;
+diff --git a/quic/tools/quic_simple_client_stream.cc b/quic/tools/quic_simple_client_stream.cc
+index 21145e1e..de6558b1 100644
+--- a/quic/tools/quic_simple_client_stream.cc
++++ b/quic/tools/quic_simple_client_stream.cc
+@@ -13,11 +13,12 @@ void QuicSimpleClientStream::OnBodyAvailable() {
+   }
+ 
+   while (HasBytesToRead()) {
+-    struct iovec iov;
+-    if (GetReadableRegions(&iov, 1) == 0) {
+-      break;
+-    }
+-    MarkConsumed(iov.iov_len);
++    struct iovec iov[10];
++    int i;
++    int iov_used = GetReadableRegions(iov, 10);
++
++    for(i = 0; i < iov_used; i++)
++	MarkConsumed(iov[i].iov_len);
+   }
+   if (sequencer()->IsClosed()) {
+     OnFinRead();
+diff --git a/quic/tools/quic_simple_server_session.cc b/quic/tools/quic_simple_server_session.cc
+index d1e9a73e..e3d03eff 100644
+--- a/quic/tools/quic_simple_server_session.cc
++++ b/quic/tools/quic_simple_server_session.cc
+@@ -5,6 +5,9 @@
+ #include "quic/tools/quic_simple_server_session.h"
+ 
+ #include <utility>
++#include <iostream>
++#include <string>
++#include <regex>
+ 
+ #include "absl/memory/memory.h"
+ #include "quic/core/http/quic_server_initiated_spdy_stream.h"
+@@ -16,6 +19,27 @@
+ #include "quic/platform/api/quic_logging.h"
+ #include "quic/tools/quic_simple_server_stream.h"
+ 
++extern std::string FLAGS_stream_min_bw;
++extern std::string FLAGS_stream_max_bw;
++extern std::string FLAGS_stream_priority;
++extern bool FLAGS_use_default_prioritization;
++
++static std::vector<std::string> split(const std::string str, const std::string delim)
++{
++    std::vector<std::string> tokens;
++    size_t prev = 0, pos = 0;
++    do
++    {
++        pos = str.find(delim, prev);
++        if (pos == std::string::npos) pos = str.length();
++	std::string token = str.substr(prev, pos-prev);
++        if (!token.empty()) tokens.push_back(token);
++        prev = pos + delim.length();
++    }
++    while (pos < str.length() && prev < str.length());
++    return tokens;
++}
++
+ namespace quic {
+ 
+ QuicSimpleServerSession::QuicSimpleServerSession(
+@@ -29,8 +53,16 @@ QuicSimpleServerSession::QuicSimpleServerSession(
+                             helper, crypto_config, compressed_certs_cache),
+       highest_promised_stream_id_(
+           QuicUtils::GetInvalidStreamId(connection->transport_version())),
+-      quic_simple_server_backend_(quic_simple_server_backend) {
++      quic_simple_server_backend_(quic_simple_server_backend),
++      stream_count_(0) {
++  const std::string delimeter = ",";
+   QUICHE_DCHECK(quic_simple_server_backend_);
++  min_bw_vector_ = split(GetQuicFlag(FLAGS_stream_min_bw), delimeter);
++  max_bw_vector_ = split(GetQuicFlag(FLAGS_stream_max_bw), delimeter);
++  priority_vector_ = split(GetQuicFlag(FLAGS_stream_priority), delimeter);
++  SetUseDefaultPriority(GetQuicFlag(FLAGS_use_default_prioritization));
++  std::cout << "QuicSimpleServerSession: min_bw_vector_ " << min_bw_vector_ << ", max_bw_vector_ " << max_bw_vector_
++      << ", priority vector_ " << priority_vector_ << " , use_default_prioritization_ " << UseDefaultPriority() << '\n';
+ }
+ 
+ QuicSimpleServerSession::~QuicSimpleServerSession() { DeleteConnection(); }
+@@ -62,6 +94,16 @@ QuicSpdyStream* QuicSimpleServerSession::CreateIncomingStream(QuicStreamId id) {
+   QuicSpdyStream* stream = new QuicSimpleServerStream(
+       id, this, BIDIRECTIONAL, quic_simple_server_backend_);
+   ActivateStream(absl::WrapUnique(stream));
++  std::cout << "CreateIncomingStream: stream_count_ " << stream_count_ << ", is static " << stream->is_static() << '\n';
++  if (stream->is_static() == false && min_bw_vector_.size() > stream_count_  && max_bw_vector_.size() > stream_count_) {
++      std::cout << "CreateIncomingStream: bw_min " << min_bw_vector_[stream_count_] << ", bw_max " << max_bw_vector_[stream_count_] << '\n';
++      stream->SetBwMin(stoi(min_bw_vector_[stream_count_]));
++      stream->SetBwMax(stoi(max_bw_vector_[stream_count_]));
++      if(priority_vector_.size() > stream_count_ && stoi(priority_vector_[stream_count_]) != 0)
++	      stream->SetPrioritized(true);
++      stream_count_++;
++  }
++  std::cout << "CreateIncomingStream: bw_min " << stream->GetBwMin() << ", bw_max " << stream->GetBwMax() << ", Is prioritized? " << stream->IsPrioritized() << '\n';
+   return stream;
+ }
+ 
+diff --git a/quic/tools/quic_simple_server_session.h b/quic/tools/quic_simple_server_session.h
+index 393a2d8d..6c96ada5 100644
+--- a/quic/tools/quic_simple_server_session.h
++++ b/quic/tools/quic_simple_server_session.h
+@@ -20,6 +20,7 @@
+ #include "quic/core/http/quic_spdy_session.h"
+ #include "quic/core/quic_crypto_server_stream_base.h"
+ #include "quic/core/quic_packets.h"
++#include "quic/core/quic_tag.h"
+ #include "quic/platform/api/quic_containers.h"
+ #include "quic/tools/quic_backend_response.h"
+ #include "quic/tools/quic_simple_server_backend.h"
+@@ -153,6 +154,12 @@ class QuicSimpleServerSession : public QuicServerSessionBase {
+   quiche::QuicheCircularDeque<PromisedStreamInfo> promised_streams_;
+ 
+   QuicSimpleServerBackend* quic_simple_server_backend_;  // Not owned.
++
++  std::vector<std::string> min_bw_vector_;
++  std::vector<std::string> max_bw_vector_;
++  std::vector<std::string> priority_vector_;
++
++  uint32_t stream_count_;
+ };
+ 
+ }  // namespace quic
+diff --git a/quic/tools/quic_simple_server_stream.cc b/quic/tools/quic_simple_server_stream.cc
+index 0ea0e50a..14b60837 100644
+--- a/quic/tools/quic_simple_server_stream.cc
++++ b/quic/tools/quic_simple_server_stream.cc
+@@ -323,7 +323,7 @@ void QuicSimpleServerStream::OnCanWrite() {
+ }
+ 
+ void QuicSimpleServerStream::WriteGeneratedBytes() {
+-  static size_t kChunkSize = 1024;
++  static size_t kChunkSize = 1024 * 50;
+   while (!HasBufferedData() && generate_bytes_length_ > 0) {
+     size_t len = std::min<size_t>(kChunkSize, generate_bytes_length_);
+     std::string data(len, 'a');
+diff --git a/quic/tools/quic_spdy_client_base.cc b/quic/tools/quic_spdy_client_base.cc
+index 464fa70f..501057b7 100644
+--- a/quic/tools/quic_spdy_client_base.cc
++++ b/quic/tools/quic_spdy_client_base.cc
+@@ -174,6 +174,18 @@ void QuicSpdyClientBase::SendRequestsAndWaitForResponse(
+   }
+ }
+ 
++void QuicSpdyClientBase::SendRequests(
++    const std::vector<std::string>& url_list) {
++  for (size_t i = 0; i < url_list.size(); ++i) {
++    Http2HeaderBlock headers;
++    if (!SpdyUtils::PopulateHeaderBlockFromUrl(url_list[i], &headers)) {
++      QUIC_BUG(quic_bug_10949_2) << "Unable to create request";
++      continue;
++    }
++    SendRequest(headers, "", true);
++  }
++}
++
+ QuicSpdyClientStream* QuicSpdyClientBase::CreateClientStream() {
+   if (!connected()) {
+     return nullptr;
+diff --git a/quic/tools/quic_spdy_client_base.h b/quic/tools/quic_spdy_client_base.h
+index 3e417253..193d9ba1 100644
+--- a/quic/tools/quic_spdy_client_base.h
++++ b/quic/tools/quic_spdy_client_base.h
+@@ -98,6 +98,9 @@ class QuicSpdyClientBase : public QuicClientBase,
+   // each to complete.
+   void SendRequestsAndWaitForResponse(const std::vector<std::string>& url_list);
+ 
++  // Sends a request simple GET for each URL in |url_list|, and don't wait
++  void SendRequests(const std::vector<std::string>& url_list);
++
+   // Returns a newly created QuicSpdyClientStream.
+   QuicSpdyClientStream* CreateClientStream();
+ 
+diff --git a/quic/tools/quic_toy_client.cc b/quic/tools/quic_toy_client.cc
+index 83fd7c08..9fe5acbb 100644
+--- a/quic/tools/quic_toy_client.cc
++++ b/quic/tools/quic_toy_client.cc
+@@ -64,6 +64,8 @@
+ #include "quic/tools/fake_proof_verifier.h"
+ #include "quic/tools/quic_url.h"
+ #include "common/quiche_text_utils.h"
++#include "quic/tools/quic_simple_client_session.h"
++#include <time.h>
+ 
+ namespace {
+ 
+@@ -229,6 +231,44 @@ DEFINE_QUIC_COMMAND_LINE_FLAG(int32_t, max_time_before_crypto_handshake_ms,
+ DEFINE_QUIC_COMMAND_LINE_FLAG(int32_t, max_inbound_header_list_size, 128 * 1024,
+                               "Max inbound header list size. 0 means default.");
+ 
++DEFINE_QUIC_COMMAND_LINE_FLAG(bool,
++                              parallel,
++                              false,
++                              "Run several requests in parallel.");
++
++DEFINE_QUIC_COMMAND_LINE_FLAG(int32_t,
++                              print_delay,
++                              1000,
++                              "Delay between streams BW prints in ms.");
++
++// Following 4 configuration are not used by client just for compatibility
++DEFINE_QUIC_COMMAND_LINE_FLAG(
++    std::string,
++    stream_min_bw,
++    "",
++    "Define a number which represent weighted dynamic priority for min value,"
++    "Several definitions are valid and will apply to streams according to open.");
++
++DEFINE_QUIC_COMMAND_LINE_FLAG(
++    std::string,
++    stream_max_bw,
++    "",
++    "Define a number which represent weighted dynamic priority for max value,"
++    "Several definitions are valid and will apply to streams according to open.");
++
++
++DEFINE_QUIC_COMMAND_LINE_FLAG(
++    std::string,
++    stream_priority,
++    "",
++    "Define if a stream has priority (single level), 0 or 1 are used."
++    "Several definitions are valid and will apply to streams according to open.");
++
++DEFINE_QUIC_COMMAND_LINE_FLAG(bool,
++                              use_default_prioritization,
++                              false,
++                              "If true, defauld SPDY 3 prioritization is used");
++
+ namespace quic {
+ namespace {
+ 
+@@ -450,7 +490,30 @@ int QuicToyClient::SendRequestsAndPrintResponses(
+   // Make sure to store the response, for later output.
+   client->set_store_response(true);
+ 
+-  for (int i = 0; i < num_requests; ++i) {
++  if (GetQuicFlag(FLAGS_parallel)) {
++    bool streams;
++    struct timespec start_t, now_t;
++    client->SendRequests(urls);
++#define US_IN_SEC 1000000
++#define NS_IN_US 1000
++#define US_IN_MS 1000
++    do {
++      std::vector<struct StreamIdBytes> count;
++      ((QuicSimpleClientSession*)client->client_session())->GetStreamsBytes(&count);
++      clock_gettime(CLOCK_MONOTONIC_RAW, &start_t);
++      streams = count.size() > 0;
++      std::cout << "streams:(" << count.size() << ")\t" << start_t.tv_sec << "." << start_t.tv_nsec / NS_IN_US << "\t";
++      for (struct StreamIdBytes i: count) {
++	  std::cout << i.id << ": " << i.len << " \t";
++      }
++      std::cout << "\n";
++      do {
++	  client->WaitForEvents();
++	  clock_gettime(CLOCK_MONOTONIC_RAW, &now_t);
++      } while (streams && ((now_t.tv_sec - start_t.tv_sec)* US_IN_SEC)
++	      + ((now_t.tv_nsec - start_t.tv_nsec) / NS_IN_US) <= GetQuicFlag(FLAGS_print_delay) * US_IN_MS);
++    } while (streams);
++  } else for (int i = 0; i < num_requests; ++i) {
+     // Send the request.
+     client->SendRequestAndWaitForResponse(header_block, body, /*fin=*/true);
+ 
+diff --git a/quic/tools/quic_toy_server.cc b/quic/tools/quic_toy_server.cc
+index e7b4e1ec..dded572f 100644
+--- a/quic/tools/quic_toy_server.cc
++++ b/quic/tools/quic_toy_server.cc
+@@ -51,6 +51,32 @@ DEFINE_QUIC_COMMAND_LINE_FLAG(bool,
+                               false,
+                               "If true, WebTransport support is enabled.");
+ 
++DEFINE_QUIC_COMMAND_LINE_FLAG(
++    std::string,
++    stream_min_bw,
++    "",
++    "Define a number which represent weighted dynamic priority for min value,"
++    "Several definitions are valid and will apply to streams according to open.");
++
++DEFINE_QUIC_COMMAND_LINE_FLAG(
++    std::string,
++    stream_max_bw,
++    "",
++    "Define a number which represent weighted dynamic priority for max value,"
++    "Several definitions are valid and will apply to streams according to open.");
++
++DEFINE_QUIC_COMMAND_LINE_FLAG(
++    std::string,
++    stream_priority,
++    "",
++    "Define if a stream has priority (single level), 0 or 1 are used."
++    "Several definitions are valid and will apply to streams according to open.");
++
++DEFINE_QUIC_COMMAND_LINE_FLAG(bool,
++                              use_default_prioritization,
++                              false,
++                              "If true, defauld SPDY 3 prioritization is used");
++
+ namespace quic {
+ 
+ std::unique_ptr<quic::QuicSimpleServerBackend>

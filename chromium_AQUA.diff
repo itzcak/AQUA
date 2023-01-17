@@ -1,0 +1,28 @@
+diff --git a/net/quic/quic_chromium_packet_reader.h b/net/quic/quic_chromium_packet_reader.h
+index faf420e37b258..7b9378a4c195a 100644
+--- a/net/quic/quic_chromium_packet_reader.h
++++ b/net/quic/quic_chromium_packet_reader.h
+@@ -23,8 +23,8 @@ namespace net {
+ // If more than this many packets have been read or more than that many
+ // milliseconds have passed, QuicChromiumPacketReader::StartReading() yields by
+ // doing a QuicChromiumPacketReader::PostTask().
+-const int kQuicYieldAfterPacketsRead = 32;
+-const int kQuicYieldAfterDurationMilliseconds = 2;
++const int kQuicYieldAfterPacketsRead = 64;
++const int kQuicYieldAfterDurationMilliseconds = 4;
+ 
+ class NET_EXPORT_PRIVATE QuicChromiumPacketReader {
+  public:
+diff --git a/net/tools/quic/quic_simple_client_bin.cc b/net/tools/quic/quic_simple_client_bin.cc
+index 3f09694c8d984..bff8ef2f6bbda 100644
+--- a/net/tools/quic/quic_simple_client_bin.cc
++++ b/net/tools/quic/quic_simple_client_bin.cc
+@@ -92,7 +92,7 @@ int main(int argc, char* argv[]) {
+   // All non-flag arguments should be interpreted as URLs to fetch.
+   std::vector<std::string> urls =
+       quic::QuicParseCommandLineFlags(usage, argc, argv);
+-  if (urls.size() != 1) {
++  if (urls.size() == 0) {
+     quic::QuicPrintCommandLineFlagHelp(usage);
+     exit(0);
+   }

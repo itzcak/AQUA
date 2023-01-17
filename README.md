@@ -29,10 +29,11 @@ Following command line parameters added to quic_server
 3. stream_priority Array of priorities with boolen value 0 or 1, connections with 1 are prioritized.
 
 Server example: Run command for 5 parallel connections 10k,100k,1m,10m,100m
- /home/maint/chromium/src/out/Default/quic_server --quic_response_cache_dir=/home/maint/QuicPlayDir\
-        --certificate_file=/home/maint/chromium/src/net/tools/quic/certs/out/leaf_cert.pem --key_file=/home/maint/chromium/src/net/tools/quic/certs/out/leaf_cert.pkcs8\
-        --generate_dynamic_responses --stream_min_bw="11264,112640,1153434,11534340,115343400" --stream_max_bw="15360,153600,1572864,15728640,157286400"\
- 		--stream_priority="1,1,1,1,0"
+
+ /home/maint/chromium/src/out/Default/quic_server --quic_response_cache_dir=/home/maint/QuicPlayDir
+        --certificate_file=/home/maint/chromium/src/net/tools/quic/certs/out/leaf_cert.pem --key_file=/home/maint/chromium/src/net/tools/quic/certs/out/leaf_cert.pkcs8
+        --generate_dynamic_responses --stream_min_bw="11264,112640,1153434,11534340,115343400" --stream_max_bw="15360,153600,1572864,15728640,157286400"
+ 		     --stream_priority="1,1,1,1,0"
     
 # Client new parameters
 Following command line parameters added to quic_client
@@ -40,5 +41,8 @@ Following command line parameters added to quic_client
 2. print_delay Delay time between butes send periodic reports (default 1 second)
 
 Client example:  Request 5 paralel connections (parameters defined by server)
- ../quic_client --host=10.10.2.2 --port=6121 --disable_certificate_verification --parallel --drop_response_body --print_delay=1000 --connection_options=QBIC\
-    http://www.example.org/10000000000 http://www.example.org/10000000000 http://www.example.org/10000000000 http://www.example.org/10000000000 http://www.example.org/10000000000
+
+ ../quic_client --host=10.10.2.2 --port=6121 --disable_certificate_verification --parallel --drop_response_body --print_delay=1000 --connection_options=QBIC
+    http://www.example.org/10000000000 http://www.example.org/10000000000 http://www.example.org/10000000000
+    http://www.example.org/10000000000 http://www.example.org/10000000000
+    

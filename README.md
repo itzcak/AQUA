@@ -22,7 +22,7 @@ RunAquaTests.sh automatic configures server and simulator to predefined combinat
 Also, configures simulator for predeined several network BW, and runs series of tests.
 The output is csv files with lists of BW per second per stream.
 
-# Server new parameters
+# quic_server new parameters
 Following command line parameters added to quic_server
 1. stream_min_bw  Array of values for min BW (separated by comma) applied to connections according to open
 2. stream_max_bw  Array of values for min BW (as above)
@@ -35,7 +35,7 @@ Server example: Run command for 5 parallel connections 10k,100k,1m,10m,100m
         --generate_dynamic_responses --stream_min_bw="11264,112640,1153434,11534340,115343400" --stream_max_bw="15360,153600,1572864,15728640,157286400"
  		     --stream_priority="1,1,1,1,0"
     
-# Client new parameters
+# quic_client new parameters
 Following command line parameters added to quic_client
 1. parallel  Enable several streams to run in parallel
 2. print_delay Delay time between butes send periodic reports (default 1 second)

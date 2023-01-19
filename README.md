@@ -9,9 +9,9 @@ Streams are configured from application level with min and max BW requirements.
 QUIC protocol level divides BW according to requirements.
 
 3 files are included:
-1. QUICHE diff file    includes all code changes on QUICHE project
-2. Chromium diff file  includes few changes
-3. RunAquaTests.sh     script for long amount of tests
+1. QUICHE diff file   - includes all code changes on QUICHE project
+2. Chromium diff file - includes few changes
+3. RunAquaTests.sh    - script for long amount of tests
 
 # Evaluation
 The evaluation is done with quic_client and quic_server demo application from Chromium project.
@@ -24,9 +24,9 @@ The output is csv files with lists of BW per second per stream.
 
 # quic_server new parameters
 Following command line parameters added to quic_server
-1. stream_min_bw  Array of values for min BW (separated by comma) applied to connections according to open
-2. stream_max_bw  Array of values for min BW (as above)
-3. stream_priority Array of priorities with boolen value 0 or 1, connections with 1 are prioritized.
+1. stream_min_bw - Array of values for min BW (separated by comma) applied to connections according to open
+2. stream_max_bw - Array of values for min BW (as above)
+3. stream_priority - Array of priorities with boolen value 0 or 1, connections with 1 are prioritized.
 
 Server example: Run command for 5 parallel connections 10k,100k,1m,10m,100m
 
@@ -37,10 +37,10 @@ Server example: Run command for 5 parallel connections 10k,100k,1m,10m,100m
     
 # quic_client new parameters
 Following command line parameters added to quic_client
-1. parallel  Enable several streams to run in parallel
-2. print_delay Delay time between butes send periodic reports (default 1 second)
+1. Parallel - Enable several streams to run in parallel
+2. Print_delay - Delay time between butes send periodic reports (default 1 second)
 
-Client example:  Request 5 paralel connections (parameters defined by server)
+Client example:  Request 5 parallel connections (parameters defined by server)
 
  ../quic_client --host=10.10.2.2 --port=6121 --disable_certificate_verification --parallel --drop_response_body --print_delay=1000 --connection_options=QBIC
     http://www.example.org/10000000000 http://www.example.org/10000000000 http://www.example.org/10000000000

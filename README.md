@@ -1,5 +1,5 @@
 # AQUA
-AQUA is a novel bandwidth allocation scheme for QoS improvement, considering unbounded number of stream requirements. 
+Multi-Stream Applications with QUIC Allocation (AQUA) is a novel bandwidth allocation scheme for QoS improvement, considering unbounded number of stream requirements. 
 It operates on top of the current congestion control schemes.
 AQUA incorporates several novel ideas to ensure that even under changing network conditions and higher number of streams, bandwidth requirements are satisfied. 
 Real-world and lab experiments of AQUA’s implementation (as a QUIC module) show that adding AQUA significantly outperforms QUIC’s performance, even under

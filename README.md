@@ -12,7 +12,7 @@ For Chromium project description see: https://chromium.googlesource.com/chromium
 
 We modified two main QUICHE's objects: (i) session object, and (ii) stream object. 
 Time intervals properties are added to these two objects, for dynamic allocation. 
-We also included parameters which capture the minimum and maximum requirements for each stream, network capacity estimation, and state.
+We also included parameters which capture the minimum and maximum requirements for each stream, network capacity estimation, and state (which relates to the ratio between the estimated capacity and the total minmum requierment across all streams).
 
 3 files are included:
 1. QUICHE diff file   - includes all code changes on QUICHE project
@@ -35,7 +35,7 @@ Both quic_server and quic_client use additional command line parameters to defin
 
 # quic_server new parameters
 Following command line parameters were added to quic_server
-1. stream_min_bw - Array of values for minimum bandwidth requirements (separated by comma) assosiated to the connection once it opened.
+1. stream_min_bw - Array of values for minimum bandwidth requirements (separated by comma) assosiated to the connection once it opens.
 2. stream_max_bw - Array of values for maximum bandwidth requirements (similar to stream_min_bw above).
 
 In our example: Run command for 5 parallel connections 10 Kbps, 100 Kbps, 1 Mbps, 10 Mbps, 100 Mbps.

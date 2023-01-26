@@ -30,10 +30,11 @@ Following command line parameters added to quic_server
 
 Server example: Run command for 5 parallel connections 10k,100k,1m,10m,100m
 
- /home/maint/chromium/src/out/Default/quic_server --quic_response_cache_dir=/home/maint/QuicPlayDir
+Command line:    
+'quic_server --quic_response_cache_dir=/home/maint/QuicPlayDir
         --certificate_file=/home/maint/chromium/src/net/tools/quic/certs/out/leaf_cert.pem --key_file=/home/maint/chromium/src/net/tools/quic/certs/out/leaf_cert.pkcs8
         --generate_dynamic_responses --stream_min_bw="11264,112640,1153434,11534340,115343400" --stream_max_bw="15360,153600,1572864,15728640,157286400"
- 		     --stream_priority="1,1,1,1,0"
+ 		     --stream_priority="1,1,1,1,0"'
     
 # quic_client new parameters
 Following command line parameters added to quic_client
@@ -42,7 +43,8 @@ Following command line parameters added to quic_client
 
 Client example:  Request 5 parallel connections (parameters defined by server)
 
- ../quic_client --host=10.10.2.2 --port=6121 --disable_certificate_verification --parallel --drop_response_body --print_delay=1000 --connection_options=QBIC
+Command line:      
+'quic_client --host=10.10.2.2 --port=6121 --disable_certificate_verification --parallel --drop_response_body --print_delay=1000 --connection_options=QBIC
     http://www.example.org/10000000000 http://www.example.org/10000000000 http://www.example.org/10000000000
-    http://www.example.org/10000000000 http://www.example.org/10000000000
+    http://www.example.org/10000000000 http://www.example.org/10000000000'
     

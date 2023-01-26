@@ -35,11 +35,10 @@ Both quic_server and quic_client use additional command line parameters to defin
 
 # quic_server new parameters
 Following command line parameters were added to quic_server
-1. stream_min_bw - Array of values for min BW (separated by comma) applied to connections according to open
-2. stream_max_bw - Array of values for min BW (as above)
-3. stream_priority - Array of priorities with boolen value 0 or 1, connections with 1 are prioritized.
+1. stream_min_bw - Array of values for minimum bandwidth requirements (separated by comma) assosiated to the connection once it opened.
+2. stream_max_bw - Array of values for maximum bandwidth requirements (similar to stream_min_bw above).
 
-In our example: Run command for 5 parallel connections 10k,100k,1m,10m,100m
+In our example: Run command for 5 parallel connections 10 Kbps, 100 Kbps, 1 Mbps, 10 Mbps, 100 Mbps.
 
 Command line:    
 'quic_server --quic_response_cache_dir=/home/maint/QuicPlayDir
@@ -52,7 +51,7 @@ Following command line parameters were added to quic_client
 1. Parallel - Enable several streams to run in parallel
 2. Print_delay - Delay time between butes send periodic reports (default 1 second)
 
-In our example:  Request 5 parallel connections (parameters defined by server)
+In our example:  Request 5 parallel connections (with the parameters defined by server)
 
 Command line:      
 'quic_client --host=10.10.2.2 --port=6121 --disable_certificate_verification --parallel --drop_response_body --print_delay=1000 --connection_options=QBIC

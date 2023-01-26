@@ -17,24 +17,24 @@ We also included parameters which capture the minimum and maximum requirements f
 3 files are included:
 1. QUICHE diff file   - includes all code changes on QUICHE project
 2. Chromium diff file - includes few changes on Chromium project
-3. RunAquaTests.sh    - script for long amount of tests
+3. RunAquaTests.sh    - script which support large number of tests
 
 # Evaluation
 AQUA bandwidth allocation was examined for each stream in different scenairos.
-The evaluation is done with quic_client and quic_server demo application from Chromium project.
-Additional command line parameters are used to manipulate min/max BW definitions per stream.
 
-Run quic_server and quic_client with simulated or real network in the middle.
-RunAquaTests.sh automatic configures server and simulator to predefined combinations of streams and min/max configuration.
-Also, configures simulator for predeined several network BW, and runs series of tests.
-The output are csv files with lists of BW for each stream, for every second.
+RunAquaTests.sh automatic configures server and simulator to predefined combinations of streams minimum and maximum requirements.
+It also configures a simulator for predeined several network bandwidth, and runs series of tests.
+The output are csv files with lists of the allocated bandwidth for each stream, for every second.
 
 For example, we consider a scenario of 5 parallel streams, each with different minimum requirement levels:
 10 Kbps, 100 Kbps, 1 Mbps, 10 Mbps, 100 Mbps. This senario captures heterogeneous stream applications in a variety of
 fields, from conferences to medical procedures. 
 
+The evaluation was conducted by quic_client and quic_server demo application from Chromium project, both in lab and in real-word networks.
+Both quic_server and quic_client use additional command line parameters to define the minimum and maximum bandwidth requirements for each stream, as presented next.
+
 # quic_server new parameters
-Following command line parameters added to quic_server
+Following command line parameters were added to quic_server
 1. stream_min_bw - Array of values for min BW (separated by comma) applied to connections according to open
 2. stream_max_bw - Array of values for min BW (as above)
 3. stream_priority - Array of priorities with boolen value 0 or 1, connections with 1 are prioritized.
@@ -48,7 +48,7 @@ Command line:
  		     --stream_priority="1,1,1,1,0"'
     
 # quic_client new parameters
-Following command line parameters added to quic_client
+Following command line parameters were added to quic_client
 1. Parallel - Enable several streams to run in parallel
 2. Print_delay - Delay time between butes send periodic reports (default 1 second)
 

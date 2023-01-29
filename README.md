@@ -49,7 +49,7 @@ Command line:
 # quic_client new parameters
 Following command line parameters were added to quic_client
 1. Parallel - Enable several streams to run in parallel
-2. Print_delay - Delay time between butes send periodic reports (default 1 second)
+2. Print_delay - Delay time between bytes send periodic reports (default 1 second)
 
 In our example:  Request 5 parallel connections (with the parameters defined by server)
 

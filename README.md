@@ -43,8 +43,7 @@ In our example: Run command for 5 parallel connections 10 Kbps, 100 Kbps, 1 Mbps
 Command line:    
 'quic_server --quic_response_cache_dir=/home/maint/QuicPlayDir
         --certificate_file=/home/maint/chromium/src/net/tools/quic/certs/out/leaf_cert.pem --key_file=/home/maint/chromium/src/net/tools/quic/certs/out/leaf_cert.pkcs8
-        --generate_dynamic_responses --stream_min_bw="11264,112640,1153434,11534340,115343400" --stream_max_bw="15360,153600,1572864,15728640,157286400"
- 		     --stream_priority="1,1,1,1,0"'
+        --generate_dynamic_responses --stream_min_bw="11264,112640,1153434,11534340,115343400" --stream_max_bw="15360,153600,1572864,15728640,157286400"'
     
 # quic_client new parameters
 Following command line parameters were added to quic_client
